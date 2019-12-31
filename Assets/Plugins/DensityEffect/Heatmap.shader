@@ -2,7 +2,12 @@
 {
 	Properties
 	{
+		[HideInInspector]
 		_MainTex("", 2D) = "white" {}
+		_MinHue("Min Hue", Float) = 0.3
+		_MaxHue("Max Hue", Float) = 1.0
+		_Cutoff("Cutoff", Float) = 0.1
+		_Steps("Steps", Int) = 10
 	}
 
 	SubShader
@@ -49,8 +54,12 @@
 				return o;
 			}
 
-			uniform sampler2D _MainTex;
-			uniform float4 _MainTex_ST;
+			sampler2D _MainTex;
+			float4 _MainTex_ST;
+			int _Steps;
+			float _MinHue;
+			float _MaxHue;
+			float _Cutoff;
 
 			float3 HUEtoRGB(in float H)
 			{
@@ -67,12 +76,16 @@
 			fixed4 frag(v2f i) : SV_Target
 			{
 				fixed4 color = tex2D(_MainTex, i.uv);
-				color = saturate((ceil(color * 10) - 1) / 9); // -1 to ignore isolated points
-				color = fixed4(HUEtoRGB(remap(color.r, 0, 1, 0.7, 0)), 0.5);
+				color = saturate(ceil(color * _Steps) / _Steps);
+				float hue = remap(color.r, 0, 1, 1 - _MinHue + _Cutoff, 1 - _MaxHue);
+				hue = clamp(hue, 1 - _MaxHue, 1 - _MinHue);
+				color = fixed4(HUEtoRGB(hue), 1.0);
 				return color;
 			}
 
 			ENDCG
 		}
 	}
+
+	CustomEditor "HeatmapShaderGUI"
 }

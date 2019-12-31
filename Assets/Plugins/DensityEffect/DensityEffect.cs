@@ -1,96 +1,113 @@
 ﻿using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Ogxd
 {
+    [DisallowMultipleComponent]
     [RequireComponent(typeof(Camera))]
-    [ExecuteInEditMode]
-	public class DensityEffect : MonoBehaviour
-	{
-		public BlurKernelSize kernelSize = BlurKernelSize.Small;
+    public class DensityEffect : MonoBehaviour
+    {
+        public float min = 0;
+        public float max = 0.7f;
+        public float cutoff = 0f;
+        public int steps = 10;
+        public float pointSize = 0.001f;
+        public float contribution = 0.05f;
 
-		[Range(0f, 1f)]
-		public float interpolation = 1f;
+        public int iterations = 1;
+        public int kernel = 4;
+        public float interpolation = 1;
+        public int downsample = 1;
 
-		[Range(0, 4)]
-		public int downsample = 1;
+        private Material densityMaterial;
+        public Material DensityMaterial => densityMaterial ?? (densityMaterial = new Material(Shader.Find("Ogxd/Density")));
 
-		[Range(1, 8)]
-		public int iterations = 1;
+        private Material heatmapMaterial;
+        public Material HeatmapMaterial => heatmapMaterial ?? (heatmapMaterial = new Material(Shader.Find("Ogxd/Heatmap")));
 
-		public bool gammaCorrection = true;
+        private Material blurMaterial;
+        public Material BlurMaterial => blurMaterial ?? (blurMaterial = new Material(Shader.Find("Ogxd/Blur")));
 
-		public Material blurMaterial;
+        private Camera sourceCamera;
+        private Camera SourceCamera => sourceCamera ?? (sourceCamera = GetComponent<Camera>());
 
-        public Material heatMapMaterial;
+        private RenderTexture effectTexture;
+        private RenderTexture swapTexture;
+        private CommandBuffer effectCommands;
 
-		protected void Blur (RenderTexture source, RenderTexture destination)
-		{
-			if (gammaCorrection)
-			{
-				Shader.EnableKeyword("GAMMA_CORRECTION");
-			}
-			else
-			{
-				Shader.DisableKeyword("GAMMA_CORRECTION");
-			}
+        public void RefreshCommandBuffer()
+        {
+            ApplyProperties();
 
-			int kernel = 0;
+            effectTexture = RenderTexture.GetTemporary(SourceCamera.pixelWidth, SourceCamera.pixelHeight, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.B8G8R8A8_UNorm);
+            int swapWidth = SourceCamera.pixelWidth >> downsample;
+            int swapHeight = SourceCamera.pixelHeight >> downsample;
+            swapTexture = RenderTexture.GetTemporary(swapWidth, swapHeight, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.B8G8R8A8_UNorm);
 
-			switch (kernelSize)
-			{
-			case BlurKernelSize.Small:
-				kernel = 0;
-				break;
-			case BlurKernelSize.Medium:
-				kernel = 2;
-				break;
-			case BlurKernelSize.Big:
-				kernel = 4;
-				break;
-			}
+            if (effectCommands == null) {
+                effectCommands = new CommandBuffer();
+                effectCommands.name = "Density Effect";
+                sourceCamera.AddCommandBuffer(CameraEvent.AfterImageEffects, effectCommands);
+            }
 
-			var rt2 = RenderTexture.GetTemporary(source.width, source.height, 0, source.format);
+            effectCommands.Clear();
+            effectCommands.SetRenderTarget(effectTexture);
+            effectCommands.ClearRenderTarget(true, true, Color.black);
 
-			for (int i = 0; i < iterations; i++)
-			{
-				// helps to achieve a larger blur
-				float radius = (float)i * interpolation + interpolation;
-				blurMaterial.SetFloat("_Radius", radius);
+            Renderer[] renderers = FindObjectsOfType<Renderer>();
+            for (int i = 0; i < renderers.Length; i++) {
+                effectCommands.DrawRenderer(renderers[i], DensityMaterial);
+            }
 
-				Graphics.Blit(source, rt2, blurMaterial, 1 + kernel);
-				source.DiscardContents();
+            for (int i = 0; i < iterations; i++) {
+                // helps to achieve a larger blur
+                float radius = (float)i * interpolation + interpolation;
+                BlurMaterial.SetFloat("_Radius", radius);
 
-				Graphics.Blit(rt2, source, blurMaterial, 2 + kernel);
-				rt2.DiscardContents();
-			}
+                effectCommands.Blit(effectTexture, swapTexture, blurMaterial, 1 + kernel);
+                effectTexture.DiscardContents();
 
-            Graphics.Blit(rt2, destination, heatMapMaterial, 0);
+                effectCommands.Blit(swapTexture, effectTexture, blurMaterial, 2 + kernel);
+                swapTexture.DiscardContents();
+            }
 
-            RenderTexture.ReleaseTemporary(rt2);
-		}
+            effectCommands.Blit(effectTexture, sourceCamera.targetTexture, HeatmapMaterial);
+        }
 
-        void OnRenderImage(RenderTexture source, RenderTexture destination) {
+        public void ApplyProperties() {
+            HeatmapMaterial.SetFloat("_MinHue", min);
+            HeatmapMaterial.SetFloat("_MaxHue", max);
+            HeatmapMaterial.SetFloat("_Cutoff", cutoff);
+            HeatmapMaterial.SetInt("_Steps", steps);
+            DensityMaterial.SetFloat("_Contribution", contribution);
+            DensityMaterial.SetFloat("_PointSize", pointSize);
+        }
 
-            if (blurMaterial == null)
+        public void OnPreRender()
+        {
+            // Updates render texture if viewport size changed
+            if (effectTexture == null || effectTexture.width != sourceCamera.pixelWidth || effectTexture.height != sourceCamera.pixelHeight) {
+                RefreshCommandBuffer();
+            }
+        }
+
+        private void Start()
+        {
+            RefreshCommandBuffer();
+        }
+
+        private void OnDisable()
+        {
+            RefreshCommandBuffer();
+        }
+
+        void OnDestroy()
+        {
+            if (effectCommands == null)
                 return;
 
-            int tw = source.width >> downsample;
-            int th = source.height >> downsample;
-
-            var rt = RenderTexture.GetTemporary(tw, th, 0, source.format);
-
-            Graphics.Blit(source, rt);
-
-            Blur(rt, destination);
-
-            RenderTexture.ReleaseTemporary(rt);
+            sourceCamera.RemoveCommandBuffer(CameraEvent.AfterImageEffects, effectCommands);
+            effectCommands.Clear();
         }
     }
-	
-	public enum BlurKernelSize
-	{
-		Small,
-		Medium,
-		Big
-	}
 }
